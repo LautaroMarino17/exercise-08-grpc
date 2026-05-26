@@ -1,32 +1,19 @@
-import os
-import grpc
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import sys
+sys.path.append("/app")
 
-GRPC_HOST = os.environ.get("GRPC_HOST", "grpc-server:50051")
+from fastapi import FastAPI, Response
+import grpc
+import node_registry_pb2
+import node_registry_pb2_grpc
 
 app = FastAPI()
 
-
-def _get_pb2():
-    import node_registry_pb2
-    return node_registry_pb2
-
-
-def _get_pb2_grpc():
-    import node_registry_pb2_grpc
-    return node_registry_pb2_grpc
+GRPC_HOST = "grpc-server:50051"
 
 
 def get_stub():
     channel = grpc.insecure_channel(GRPC_HOST)
-    return _get_pb2_grpc().NodeRegistryStub(channel)
-
-
-class RegisterRequest(BaseModel):
-    name: str
-    host: str
-    port: int
+    return node_registry_pb2_grpc.NodeRegistryServiceStub(channel)
 
 
 @app.get("/health")
@@ -34,50 +21,27 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/nodes", status_code=201)
-def register_node(req: RegisterRequest):
-    pb2 = _get_pb2()
+@app.post("/api/nodes", status_code=201)
+def register_node(node: dict):
+    stub = get_stub()
+    response = stub.RegisterNode(
+        node_registry_pb2.NodeRequest(name=node.get("name", ""), ip=node.get("ip", ""))
+    )
+    return {"message": response.message}
+
+
+@app.get("/api/nodes")
+def get_nodes():
+    stub = get_stub()
+    response = stub.GetNodes(node_registry_pb2.Empty())
+    return [{"name": n.name, "ip": n.ip} for n in response.nodes]
+
+
+@app.delete("/api/nodes/{name}", status_code=204)
+def delete_node(name: str):
     stub = get_stub()
     try:
-        response = stub.Register(pb2.RegisterRequest(name=req.name, host=req.host, port=req.port))
-    except grpc.RpcError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    n = response.node
-    return {"id": n.id, "name": n.name, "host": n.host, "port": n.port}
-
-
-@app.get("/nodes")
-def list_nodes():
-    pb2 = _get_pb2()
-    stub = get_stub()
-    try:
-        response = stub.List(pb2.Empty())
-    except grpc.RpcError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    return [{"id": n.id, "name": n.name, "host": n.host, "port": n.port} for n in response.nodes]
-
-
-@app.get("/nodes/{node_id}")
-def get_node(node_id: str):
-    pb2 = _get_pb2()
-    stub = get_stub()
-    try:
-        response = stub.Get(pb2.GetRequest(id=node_id))
-    except grpc.RpcError as e:
-        if e.code() == grpc.StatusCode.NOT_FOUND:
-            raise HTTPException(status_code=404, detail="Node not found")
-        raise HTTPException(status_code=502, detail=str(e))
-    n = response.node
-    return {"id": n.id, "name": n.name, "host": n.host, "port": n.port}
-
-
-@app.delete("/nodes/{node_id}", status_code=204)
-def delete_node(node_id: str):
-    pb2 = _get_pb2()
-    stub = get_stub()
-    try:
-        stub.Delete(pb2.DeleteRequest(id=node_id))
-    except grpc.RpcError as e:
-        if e.code() == grpc.StatusCode.NOT_FOUND:
-            raise HTTPException(status_code=404, detail="Node not found")
-        raise HTTPException(status_code=502, detail=str(e))
+        stub.DeleteNode(node_registry_pb2.NodeRequest(name=name, ip=""))
+    except Exception:
+        pass
+    return Response(status_code=204)
